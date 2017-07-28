@@ -66,19 +66,21 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     self.inputSelector.setMRMLScene( slicer.mrmlScene )
     self.inputSelector.setToolTip( "Pick the input to the algorithm." )
 
-
     self.inputModeLabel = qt.QLabel("Pick input mode:")
     self.loadFromVolume = qt.QRadioButton("Load from Volume")
+    self.loadFromVolume.checked = True
     self.loadFromDicom = qt.QRadioButton("Load from DICOM")
 
+    self.loadFromVolume.connect("clicked(bool)", self.onSelect)
+    self.loadFromDicom.connect("clicked(bool)", self.onSelect)
 
     self.inputDicomSelector = ctk.ctkDirectoryButton()
     self.inputDicomSelector.caption = 'Input DICOMs'
+    self.inputDicomSelector.connect("directoryChanged(QString)", self.onSelect)
 
     parametersFormLayout.addRow(self.inputModeLabel)
     parametersFormLayout.addRow(self.loadFromVolume, self.inputSelector)
     parametersFormLayout.addRow(self.loadFromDicom, self.inputDicomSelector)
-
 
     #
     # Apply Button
@@ -98,12 +100,21 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     # Refresh Apply button state
     self.onSelect()
 
+
   def cleanup(self):
     pass
 
   def onSelect(self):
-    if self.inputSelector.currentNode():
-      self.applyButton.enabled = True
+    if self.loadFromDicom.checked:
+      for root, dirs, files in os.walk(self.inputDicomSelector.directory):
+        for file in files:
+          if file.lower().endswith('.dcm') or file.lower().endswith('.ima'):
+            self.applyButton.enabled = True
+            return
+
+    elif self.loadFromVolume.checked and self.inputSelector.currentNode():
+        self.applyButton.enabled = True
+
     else:
       self.applyButton.enabled = False
 
