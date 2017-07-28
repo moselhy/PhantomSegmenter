@@ -45,7 +45,7 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     # Import from Volume Node Area
     #
     parametersCollapsibleButton = ctk.ctkCollapsibleButton()
-    parametersCollapsibleButton.text = "Import from Volume Node"
+    parametersCollapsibleButton.text = "Parameters"
     self.layout.addWidget(parametersCollapsibleButton)
 
     # Layout within the dummy collapsible button
@@ -65,29 +65,20 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     self.inputSelector.showChildNodeTypes = False
     self.inputSelector.setMRMLScene( slicer.mrmlScene )
     self.inputSelector.setToolTip( "Pick the input to the algorithm." )
-    parametersFormLayout.addRow("Input Volume: ", self.inputSelector)
-
-    self.changeInput = qt.QRadioButton("Pick an input mode")
-    self.grpBox = qt.QGroupBox()
-    
-    parametersFormLayout.addRow(self.grpBox)
 
 
-    #
-    # Import from DICOMs Area
-    #
-    importFromDicomsCollapsible = ctk.ctkCollapsibleButton()
-    importFromDicomsCollapsible.text = "Import From DICOMs"
-    self.layout.addWidget(importFromDicomsCollapsible)
+    self.inputModeLabel = qt.QLabel("Pick input mode:")
+    self.loadFromVolume = qt.QRadioButton("Load from Volume")
+    self.loadFromDicom = qt.QRadioButton("Load from DICOM")
 
-    # Layout within the dummy collapsible button
-    fromFileLayout = qt.QFormLayout(importFromDicomsCollapsible)
 
-    # add input directory selector
-    label = qt.QLabel('Use DICOMs:')
-    self.__fDialog = ctk.ctkDirectoryButton()
-    self.__fDialog.caption = 'Input DICOMs'
-    fromFileLayout.addRow(label, self.__fDialog)
+    self.inputDicomSelector = ctk.ctkDirectoryButton()
+    self.inputDicomSelector.caption = 'Input DICOMs'
+
+    parametersFormLayout.addRow(self.inputModeLabel)
+    parametersFormLayout.addRow(self.loadFromVolume, self.inputSelector)
+    parametersFormLayout.addRow(self.loadFromDicom, self.inputDicomSelector)
+
 
     #
     # Apply Button
