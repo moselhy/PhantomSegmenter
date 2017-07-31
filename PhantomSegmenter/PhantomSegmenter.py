@@ -47,12 +47,12 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     #
     # Import from Volume Node Area
     #
-    parametersCollapsibleButton = ctk.ctkCollapsibleButton()
-    parametersCollapsibleButton.text = "Parameters"
-    self.layout.addWidget(parametersCollapsibleButton)
+    self.parametersCollapsibleButton = ctk.ctkCollapsibleButton()
+    self.parametersCollapsibleButton.text = "Parameters"
+    self.layout.addWidget(self.parametersCollapsibleButton)
 
     # Layout within the dummy collapsible button
-    parametersFormLayout = qt.QFormLayout(parametersCollapsibleButton)
+    self.parametersFormLayout = qt.QFormLayout(self.parametersCollapsibleButton)
 
     #
     # input volume selector
@@ -81,9 +81,23 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     self.inputDicomSelector.caption = 'Input DICOMs'
     self.inputDicomSelector.connect("directoryChanged(QString)", self.onSelect)
 
-    parametersFormLayout.addRow(self.inputModeLabel)
-    parametersFormLayout.addRow(self.loadFromVolume, self.inputSelector)
-    parametersFormLayout.addRow(self.loadFromDicom, self.inputDicomSelector)
+    self.parametersFormLayout.addRow(self.inputModeLabel)
+    self.parametersFormLayout.addRow(self.loadFromVolume, self.inputSelector)
+    self.parametersFormLayout.addRow(self.loadFromDicom, self.inputDicomSelector)
+
+    # # Seed selector - not needed
+    # self.seedFiducialsNodeSelector = slicer.qSlicerSimpleMarkupsWidget()
+    # self.seedFiducialsNodeSelector.objectName = 'seedFiducialsNodeSelector'
+    # self.seedFiducialsNodeSelector.toolTip = "Select a fiducial to use as the origin of the background segment."
+    # self.seedFiducialsNodeSelector.setNodeBaseName("OriginSeed")
+    # self.seedFiducialsNodeSelector.defaultNodeColor = qt.QColor(0,255,0)
+    # self.seedFiducialsNodeSelector.tableWidget().hide()
+    # self.seedFiducialsNodeSelector.markupsSelectorComboBox().noneEnabled = False
+    # self.seedFiducialsNodeSelector.markupsPlaceWidget().placeMultipleMarkups = slicer.qSlicerMarkupsPlaceWidget.ForcePlaceSingleMarkup
+    # self.parametersFormLayout.addRow("Seeds:", self.seedFiducialsNodeSelector)
+    # self.parent.connect('mrmlSceneChanged(vtkMRMLScene*)',
+    #                     self.seedFiducialsNodeSelector, 'setMRMLScene(vtkMRMLScene*)')
+    # self.seedFiducialsNodeSelector.setMRMLScene(slicer.mrmlScene)
 
     #
     # Apply Button
@@ -111,17 +125,17 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     self.applyButton.enabled = self.loadFromDicom.checked or self.loadFromVolume.checked and self.inputSelector.currentNode()
 
   def onApplyButton(self):
-    logic = PhantomSegmenterLogic()
+    self.logic = PhantomSegmenterLogic()
 
     if self.loadFromDicom.checked:
       dcmpath = self.inputDicomSelector.directory
-      vol = logic.convertNrrd(dcmpath)
+      vol = self.logic.convertNrrd(dcmpath)
       if not vol:
         return
     else:
       vol = self.inputSelector.currentNode()
 
-    logic.run(vol)
+    self.logic.run(vol)
     logging.info("Segmentation complete.")
 
     # self.promptSeedSelect("background")
@@ -133,7 +147,29 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     c.setText("Click on a point in the %s to select the seed" % seed)
     c.setStandardButtons(qt.QMessageBox.Ok)
     c.setDefaultButton(qt.QMessageBox.Ok)
-    c.exec_()
+    answer = c.exec_()
+    if answer == qt.QMessageBox.Cancel:
+      logging.info("Terminating...")
+      self.logic = None
+      return
+
+    logging.info("Coords are: " + self.drawFiducial(seed))
+
+  def drawFiducial(self, seed):
+    ras = [0.0,0.0,0.0]
+
+    fidNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode', seed)
+    selectionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLSelectionNodeSingleton")
+    selectionNode.SetReferenceActivePlaceNodeID(fidNode.GetID())
+    interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
+    # For multiple clicks, change this to 1
+    placeModePersistence = 0
+    interactionNode.SetPlaceModePersistence(placeModePersistence)
+    interactionNode.SetCurrentInteractionMode(1)
+
+    fidNode.GetNthFiducialPosition(0, ras)
+
+    return ras
 
 #
 # PhantomSegmenterLogic
