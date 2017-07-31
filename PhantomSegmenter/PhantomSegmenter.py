@@ -3,6 +3,9 @@ import unittest
 import vtk, qt, ctk, slicer
 from slicer.ScriptedLoadableModule import *
 import logging
+import dicom
+from dicom.filereader import InvalidDicomError
+from DICOMScalarVolumePlugin import DICOMScalarVolumePluginClass
 
 #
 # PhantomSegmenter
@@ -105,21 +108,32 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     pass
 
   def onSelect(self):
-    if self.loadFromDicom.checked:
-      for root, dirs, files in os.walk(self.inputDicomSelector.directory):
-        for file in files:
-          if file.lower().endswith('.dcm') or file.lower().endswith('.ima'):
-            self.applyButton.enabled = True
-            return
-
-    elif self.loadFromVolume.checked and self.inputSelector.currentNode():
-        self.applyButton.enabled = True
-
-    else:
-      self.applyButton.enabled = False
+    self.applyButton.enabled = self.loadFromDicom.checked or self.loadFromVolume.checked and self.inputSelector.currentNode()
 
   def onApplyButton(self):
     logic = PhantomSegmenterLogic()
+
+    if self.loadFromDicom.checked:
+      dcmpath = self.inputDicomSelector.directory
+      vol = logic.convertNrrd(dcmpath)
+      if not vol:
+        return
+    else:
+      vol = self.inputSelector.currentNode()
+
+    logic.run(vol)
+    logging.info("Segmentation complete.")
+
+    # self.promptSeedSelect("background")
+    # self.promptSeedSelect("phantom")
+
+  def promptSeedSelect(self, seed):
+    c = ctk.ctkMessageBox()
+    c.setIcon(qt.QMessageBox.Information)
+    c.setText("Click on a point in the %s to select the seed" % seed)
+    c.setStandardButtons(qt.QMessageBox.Ok)
+    c.setDefaultButton(qt.QMessageBox.Ok)
+    c.exec_()
 
 #
 # PhantomSegmenterLogic
@@ -127,205 +141,157 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
 
 
 class PhantomSegmenterLogic(ScriptedLoadableModuleLogic):
-  def __init__(self, dcmpath):
-    self.dcmpath = dcmpath
-    if not os.path.exist(dcmpath):
-      raise IOError("Error: This path does not exist " + dcmpath)
 
-  def run(self):
-    # use an external file to convert a dicom volume to nrrd format
-    # input from the system should be the directory containing all of the dicom volumes you wish to convert
-    # Each volume should be in a separate folder
-    converter = NrrdConverter()
-
-    # convert each folder contents (full DICOM set) to a nrrd volume
-    vols = converter.convertNrrd(self.dcmpath)
-
-    logging.error(str(len(vols)))
-
+  def run(self, masterVolumeNode):
     # for each volume we will perform the segmentation
     # much of this code is based off of https://subversion.assembla.com/svn/slicerrt/trunk/SlicerRt/samples/PythonScripts/SegmentGrowCut/SegmentGrowCutSimple.py
-    for vol in vols:
-      # setup the segmentation node for our DICOM volume - "masterVolumeNode"
-      masterVolumeNode = vol
-      segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
-      segmentationNode.SetName(vol.GetName())
-      segmentationNode.CreateDefaultDisplayNodes()
-      segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(masterVolumeNode)
 
-      # create segment seed(s) for phantom volume
-      volSeedPositions = ([50.5,24.9,32.4], [-50.5,24.9,32.4],[-50.5,24.9,-62.4]) # change these based on phantom location in image
-      append = vtk.vtkAppendPolyData()
-      for volSeedPosition in volSeedPositions:
-        # create a seed as a sphere
-        volSeed = vtk.vtkSphereSource()
-        volSeed.SetCenter(volSeedPosition) 
-        volSeed.SetRadius(10) # change this based on size of phantom or preference
-        volSeed.Update()
-        append.AddInputData(volSeed.GetOutput())
+    # setup the segmentation node for our DICOM volume - "masterVolumeNode"
+    segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+    segmentationNode.SetName(masterVolumeNode.GetName())
+    segmentationNode.CreateDefaultDisplayNodes()
+    segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(masterVolumeNode)
 
-      append.Update()
+    # create segment seed(s) for phantom volume
+    volSeedPositions = ([50.5,24.9,32.4], [-50.5,24.9,32.4],[-50.5,24.9,-62.4]) # change these based on phantom location in image
+    append = vtk.vtkAppendPolyData()
+    for volSeedPosition in volSeedPositions:
+      # create a seed as a sphere
+      volSeed = vtk.vtkSphereSource()
+      volSeed.SetCenter(volSeedPosition) 
+      volSeed.SetRadius(10) # change this based on size of phantom or preference
+      volSeed.Update()
+      append.AddInputData(volSeed.GetOutput())
+
+    append.Update()
+    
+    # add segmentation to the segmentationNode. "PhantomVolume" can be any string, and the following double array is colour.
+    volSegID = segmentationNode.AddSegmentFromClosedSurfaceRepresentation(append.GetOutput(), "PhantomVolume", [1.0,0.0,0.0])
+
+    # create segment seed(s) for the background noise
+    bgSeedPositions = ([47,124,8],[-47,-80,8],[44,-90,32], [63,-83,6], [-68,106,-56]) # change these based on where the background/noise is in your image
+    appendBg = vtk.vtkAppendPolyData()
+    for bgSeedPos in bgSeedPositions:
+      bgSeed = vtk.vtkSphereSource()
+      bgSeed.SetCenter(bgSeedPos) 
+      bgSeed.SetRadius(10)# change this based on background size
+      bgSeed.Update()
+      appendBg.AddInputData(bgSeed.GetOutput())
+
+    appendBg.Update()
+    
+    # add background segmentation to the segmentationNode. Change the name or colour inputs based on preference.
+    segmentationNode.AddSegmentFromClosedSurfaceRepresentation(appendBg.GetOutput(), "Background", [0.0,1.0,0.0])
+
+    # create segmentation seed(s) for any additional feature that you wish to segment out
+    featSeedPositions = ([32, -35, -11],[-28,-35,11],[-50,-35,11],[-15,42,18],[-15,30,18]) # change this based on the location of feature(s)
+    appendFeat = vtk.vtkAppendPolyData()
+    for featSeedPos in featSeedPositions:
+      featSeed = vtk.vtkSphereSource()
+      featSeed.SetCenter(featSeedPos) 
+      featSeed.SetRadius(2) # small sphere for small features. Change depending on size of objects in your phantom
+      featSeed.Update()
+      appendFeat.AddInputData(featSeed.GetOutput())
+
+    appendFeat.Update()
+    
+    # add feature segmentation seeds to the segmentationNode. Change the name or colour based on preference.
+    segmentationNode.AddSegmentFromClosedSurfaceRepresentation(appendFeat.GetOutput(), "Feature", [0.0,0.0,1.0])
+
+    # startup segmentEditor to grow seeds and any additional effects
+    segmentEditorWidget = slicer.qMRMLSegmentEditorWidget()
+    # segmentEditorWidget.show() # this is for debugging if you need to!
+    segmentEditorWidget.setMRMLScene(slicer.mrmlScene)
+    segmentEditorNode = slicer.vtkMRMLSegmentEditorNode()
+    slicer.mrmlScene.AddNode(segmentEditorNode)
+    segmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)
+    segmentEditorWidget.setSegmentationNode(segmentationNode)
+    segmentEditorWidget.setMasterVolumeNode(masterVolumeNode)
+
+    # grow from seeds
+    segmentEditorWidget.setActiveEffectByName("Grow from seeds")
+    effect = segmentEditorWidget.activeEffect()
+    effect.self().onPreview()
+    
+    # for troubleshooting / editing the seed growth, stop before the onApply() function
+    effect.self().onApply()
+
+    # grow the background further into the phantom volume segmentation
+    # i needed this as my images had a noisy edge to the phantom volume, so it picked up to much noise as phantom volume
+    segmentEditorWidget.setActiveEffectByName("Margin")
+    mEffect = segmentEditorWidget.activeEffect()
+    segmentEditorWidget.setCurrentSegmentID('Background') # change this based on your needs: does a segment not get all of your volume, or too much?
+    mEffect.setParameter('MarginSizeMm', 8.0) # change 8.0 based on how well your segmentation performed. Change to negative if you need to shrink instead of grow.
+    mEffect.self().onApply()
+
+    # cleanup segment editor node
+    slicer.mrmlScene.RemoveNode(segmentEditorNode)
+
+  def convertNrrd(self, dcmpath):
+    from PythonQt import BoolResult
+    volArray = []
+
+    files = os.listdir(dcmpath)
+    files = [os.path.join(dcmpath, file) for file in files]
+
+    for file in files:
+      if os.path.isfile(file):
+        try:
+          ds = dicom.read_file(file)
+          sn = ds.SeriesNumber
+          volArray.append(file)
+        except InvalidDicomError as ex:
+          pass
+
+    if len(volArray) == 0:
+      logging.info("No DICOMs were found in directory " + dcmpath)
+      logging.info("Doing recursive search...")
+
+      recdcms = self.findDicoms(dcmpath)
+
+      if len(recdcms) == 0:
+        return None
+
+      else:
+        keys = recdcms.keys()
+        diag = qt.QInputDialog()
+        scriptpath = os.path.dirname(__file__)
+        iconpath = os.path.join(scriptpath, 'Resources', 'Icons', 'PhantomSegmenter.png')
+        iconpath = iconpath.replace('\\', '/')
+        icon = qt.QIcon(iconpath)
+        diag.setWindowIcon(icon)
+        ok = BoolResult()
+        sn = qt.QInputDialog.getItem(diag, "Pick Volume", "Choose Series Number:", keys, 0, False, ok)
+        volArray = recdcms[str(sn)]
+
+        if not ok:
+          logging.error("No volume selected. Terminating...")
+          return None
+
+    importer = DICOMScalarVolumePluginClass()
+    volNode = importer.load(importer.examine([volArray])[0])
+    volNode.SetName(str(sn))
       
-      # add segmentation to the segmentationNode. "PhantomVolume" can be any string, and the following double array is colour.
-      volSegID = segmentationNode.AddSegmentFromClosedSurfaceRepresentation(append.GetOutput(), "PhantomVolume", [1.0,0.0,0.0])
+    return volNode
 
-      # create segment seed(s) for the background noise
-      bgSeedPositions = ([47,124,8],[-47,-80,8],[44,-90,32], [63,-83,6], [-68,106,-56]) # change these based on where the background/noise is in your image
-      appendBg = vtk.vtkAppendPolyData()
-      for bgSeedPos in bgSeedPositions:
-        bgSeed = vtk.vtkSphereSource()
-        bgSeed.SetCenter(bgSeedPos) 
-        bgSeed.SetRadius(10)# change this based on background size
-        bgSeed.Update()
-        appendBg.AddInputData(bgSeed.GetOutput())
+  def findDicoms(self, dcmpath):
+    dcmdict = {}
+    for root, dirs, files in os.walk(dcmpath):
+      files = [os.path.join(root, filename) for filename in files]
+      for file in files:
+        try:
+          ds = dicom.read_file(file)
+          sn = str(ds.SeriesNumber)
+          if sn not in dcmdict:
+            dcmdict[sn] = []
+          dcmdict[sn].append(file)
+        except Exception as e:
+          pass
 
-      appendBg.Update()
-      
-      # add background segmentation to the segmentationNode. Change the name or colour inputs based on preference.
-      segmentationNode.AddSegmentFromClosedSurfaceRepresentation(appendBg.GetOutput(), "Background", [0.0,1.0,0.0])
+    if len(dcmdict) == 0:
+      logging.error("No DICOMs were recursively found in directory " + dcmpath)
 
-      # create segmentation seed(s) for any additional feature that you wish to segment out
-      featSeedPositions = ([32, -35, -11],[-28,-35,11],[-50,-35,11],[-15,42,18],[-15,30,18]) # change this based on the location of feature(s)
-      appendFeat = vtk.vtkAppendPolyData()
-      for featSeedPos in featSeedPositions:
-        featSeed = vtk.vtkSphereSource()
-        featSeed.SetCenter(featSeedPos) 
-        featSeed.SetRadius(2) # small sphere for small features. Change depending on size of objects in your phantom
-        featSeed.Update()
-        appendFeat.AddInputData(featSeed.GetOutput())
-
-      appendFeat.Update()
-      
-      # add feature segmentation seeds to the segmentationNode. Change the name or colour based on preference.
-      segmentationNode.AddSegmentFromClosedSurfaceRepresentation(appendFeat.GetOutput(), "Feature", [0.0,0.0,1.0])
-
-      # startup segmentEditor to grow seeds and any additional effects
-      segmentEditorWidget = slicer.qMRMLSegmentEditorWidget()
-      # segmentEditorWidget.show() # this is for debugging if you need to!
-      segmentEditorWidget.setMRMLScene(slicer.mrmlScene)
-      segmentEditorNode = slicer.vtkMRMLSegmentEditorNode()
-      slicer.mrmlScene.AddNode(segmentEditorNode)
-      segmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)
-      segmentEditorWidget.setSegmentationNode(segmentationNode)
-      segmentEditorWidget.setMasterVolumeNode(masterVolumeNode)
-
-      # grow from seeds
-      segmentEditorWidget.setActiveEffectByName("Grow from seeds")
-      effect = segmentEditorWidget.activeEffect()
-      effect.self().onPreview()
-      
-      # for troubleshooting / editing the seed growth, stop before the onApply() function
-      effect.self().onApply()
-
-      # grow the background further into the phantom volume segmentation
-      # i needed this as my images had a noisy edge to the phantom volume, so it picked up to much noise as phantom volume
-      segmentEditorWidget.setActiveEffectByName("Margin")
-      mEffect = segmentEditorWidget.activeEffect()
-      segmentEditorWidget.setCurrentSegmentID('Background') # change this based on your needs: does a segment not get all of your volume, or too much?
-      mEffect.setParameter('MarginSizeMm', 8.0) # change 8.0 based on how well your segmentation performed. Change to negative if you need to shrink instead of grow.
-      mEffect.self().onApply()
-
-      # cleanup segment editor node
-      slicer.mrmlScene.RemoveNode(segmentEditorNode)
-
-
-class PhantomSegmenterLogicSample(ScriptedLoadableModuleLogic):
-  """This class should implement all the actual
-  computation done by your module.  The interface
-  should be such that other python code can import
-  this class and make use of the functionality without
-  requiring an instance of the Widget.
-  Uses ScriptedLoadableModuleLogic base class, available at:
-  https://github.com/Slicer/Slicer/blob/master/Base/Python/slicer/ScriptedLoadableModule.py
-  """
-
-  def hasImageData(self,volumeNode):
-    """This is an example logic method that
-    returns true if the passed in volume
-    node has valid image data
-    """
-    if not volumeNode:
-      logging.debug('hasImageData failed: no volume node')
-      return False
-    if volumeNode.GetImageData() is None:
-      logging.debug('hasImageData failed: no image data in volume node')
-      return False
-    return True
-
-  def isValidInputOutputData(self, inputVolumeNode, outputVolumeNode):
-    """Validates if the output is not the same as input
-    """
-    if not inputVolumeNode:
-      logging.debug('isValidInputOutputData failed: no input volume node defined')
-      return False
-    if not outputVolumeNode:
-      logging.debug('isValidInputOutputData failed: no output volume node defined')
-      return False
-    if inputVolumeNode.GetID()==outputVolumeNode.GetID():
-      logging.debug('isValidInputOutputData failed: input and output volume is the same. Create a new volume for output to avoid this error.')
-      return False
-    return True
-
-  def takeScreenshot(self,name,description,type=-1):
-    # show the message even if not taking a screen shot
-    slicer.util.delayDisplay('Take screenshot: '+description+'.\nResult is available in the Annotations module.', 3000)
-
-    lm = slicer.app.layoutManager()
-    # switch on the type to get the requested window
-    widget = 0
-    if type == slicer.qMRMLScreenShotDialog.FullLayout:
-      # full layout
-      widget = lm.viewport()
-    elif type == slicer.qMRMLScreenShotDialog.ThreeD:
-      # just the 3D window
-      widget = lm.threeDWidget(0).threeDView()
-    elif type == slicer.qMRMLScreenShotDialog.Red:
-      # red slice window
-      widget = lm.sliceWidget("Red")
-    elif type == slicer.qMRMLScreenShotDialog.Yellow:
-      # yellow slice window
-      widget = lm.sliceWidget("Yellow")
-    elif type == slicer.qMRMLScreenShotDialog.Green:
-      # green slice window
-      widget = lm.sliceWidget("Green")
-    else:
-      # default to using the full window
-      widget = slicer.util.mainWindow()
-      # reset the type so that the node is set correctly
-      type = slicer.qMRMLScreenShotDialog.FullLayout
-
-    # grab and convert to vtk image data
-    qpixMap = qt.QPixmap().grabWidget(widget)
-    qimage = qpixMap.toImage()
-    imageData = vtk.vtkImageData()
-    slicer.qMRMLUtils().qImageToVtkImageData(qimage,imageData)
-
-    annotationLogic = slicer.modules.annotations.logic()
-    annotationLogic.CreateSnapShot(name, description, type, 1, imageData)
-
-  def run(self, inputVolume, outputVolume, imageThreshold, enableScreenshots=0):
-    """
-    Run the actual algorithm
-    """
-
-    if not self.isValidInputOutputData(inputVolume, outputVolume):
-      slicer.util.errorDisplay('Input volume is the same as output volume. Choose a different output volume.')
-      return False
-
-    logging.info('Processing started')
-
-    # Compute the thresholded output volume using the Threshold Scalar Volume CLI module
-    cliParams = {'InputVolume': inputVolume.GetID(), 'OutputVolume': outputVolume.GetID(), 'ThresholdValue' : imageThreshold, 'ThresholdType' : 'Above'}
-    cliNode = slicer.cli.run(slicer.modules.thresholdscalarvolume, None, cliParams, wait_for_completion=True)
-
-    # Capture screenshot
-    if enableScreenshots:
-      self.takeScreenshot('PhantomSegmenterTest-Start','MyScreenshot',-1)
-
-    logging.info('Processing completed')
-
-    return True
-
+    return dcmdict
 
 class PhantomSegmenterTest(ScriptedLoadableModuleTest):
   """
@@ -380,49 +346,3 @@ class PhantomSegmenterTest(ScriptedLoadableModuleTest):
     logic = PhantomSegmenterLogic()
     self.assertIsNotNone( logic.hasImageData(volumeNode) )
     self.delayDisplay('Test passed!')
-
-
-class NrrdConverter(object):
-
-  def convertNrrd(self, dcmpath):
-    import os, shutil, dicom, sys, logging, subprocess, slicer
-    dcmDict = {}
-    volArray = []
-
-
-    pathwalk = os.walk(dcmpath)
-    for root, dirs, files in pathwalk:
-      for filename in files:
-        filename = os.path.join(root, filename)
-        ds = dicom.read_file(filename)
-        seriesNumber = ds.SeriesNumber
-
-        if seriesNumber not in dcmDict:
-          dcmDict[seriesNumber] = []
-        
-        dcmDict[seriesNumber].append(filename)
-
-
-    userpath = os.path.expanduser('~')
-    tmpfolder = os.path.join(userpath, "Documents", "Temporary")
-    if os.path.exists(tmpfolder):
-      shutil.rmtree(tmpfolder)
-
-    for sn, dcmlist in dcmDict.items():
-      snfolder = os.path.join(tmpfolder, str(sn))
-      os.makedirs(snfolder)
-      for dcm in dcmlist:
-        shutil.copy(dcm, snfolder)
-
-      outputVolume = os.path.join(snfolder, "completevolume.nrrd")
-      converterpath = os.path.normpath(r"C:\Users\cmccu\Documents\slicerweek\convertToNrrd\DicomToNrrdConverter.exe")
-      runnerpath = os.path.join(os.path.split(converterpath)[0], "runner.bat")
-      execString = runnerpath + " " + converterpath + " --inputDicomDirectory " + snfolder + " --outputVolume " + outputVolume
-      # logging.info(execString)
-      os.system(execString)
-      
-      volNode = slicer.util.loadVolume(outputVolume, returnNode = True)[1]
-      volNode.SetName(str(sn))
-      volArray.append(volNode)
-      
-    return volArray
