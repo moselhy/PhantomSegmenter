@@ -1,4 +1,4 @@
-import os, sys
+﻿import os, sys
 import unittest
 import vtk, qt, ctk, slicer
 from slicer.ScriptedLoadableModule import *
@@ -85,6 +85,8 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     self.parametersFormLayout.addRow(self.loadFromVolume, self.inputSelector)
     self.parametersFormLayout.addRow(self.loadFromDicom, self.inputDicomSelector)
 
+    self.seedCoords = {}
+
     # # Seed selector - not needed
     # self.seedFiducialsNodeSelector = slicer.qSlicerSimpleMarkupsWidget()
     # self.seedFiducialsNodeSelector.objectName = 'seedFiducialsNodeSelector'
@@ -129,34 +131,124 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
 
     if self.loadFromDicom.checked:
       dcmpath = self.inputDicomSelector.directory
-      vol = self.logic.convertNrrd(dcmpath)
-      if not vol:
+      self.masterVolumeNode = self.loadDicoms(dcmpath)
+      if not self.masterVolumeNode:
         return
     else:
-      vol = self.inputSelector.currentNode()
+      self.masterVolumeNode = self.inputSelector.currentNode()
 
-    self.logic.run(vol)
-    logging.info("Segmentation complete.")
 
-    # self.promptSeedSelect("background")
-    # self.promptSeedSelect("phantom")
+    self.seedSelectInfo("background")
 
-  def promptSeedSelect(self, seed):
-    c = ctk.ctkMessageBox()
-    c.setIcon(qt.QMessageBox.Information)
-    c.setText("Click on a point in the %s to select the seed" % seed)
-    c.setStandardButtons(qt.QMessageBox.Ok)
-    c.setDefaultButton(qt.QMessageBox.Ok)
-    answer = c.exec_()
+  def loadDicoms(self, dcmpath):
+    from PythonQt import BoolResult
+    volArray = []
+
+    files = os.listdir(dcmpath)
+    files = [os.path.join(dcmpath, file) for file in files]
+
+    for file in files:
+      if os.path.isfile(file):
+        try:
+          ds = dicom.read_file(file)
+          sn = ds.SeriesNumber
+          volArray.append(file)
+        except InvalidDicomError as ex:
+          pass
+
+    if len(volArray) == 0:
+      logging.info("No DICOMs were found in directory " + dcmpath)
+      logging.info("Doing recursive search...")
+
+      qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
+
+      recdcms = self.findDicoms(dcmpath)
+
+      qt.QApplication.restoreOverrideCursor()
+
+      if len(recdcms) == 0:
+        return None
+
+      else:
+        keys = recdcms.keys()
+        diag = qt.QInputDialog()
+        scriptpath = os.path.dirname(__file__)
+        iconpath = os.path.join(scriptpath, 'Resources', 'Icons', 'PhantomSegmenter.png')
+        iconpath = iconpath.replace('\\', '/')
+        icon = qt.QIcon(iconpath)
+        diag.setWindowIcon(icon)
+        ok = BoolResult()
+        sn = qt.QInputDialog.getItem(diag, "Pick Volume", "Choose Series Number:", keys, 0, False, ok)
+        volArray = recdcms[str(sn)]
+        volDir = os.path.dirname(volArray[0])
+        self.inputDicomSelector.directory = volDir
+
+        if not ok:
+          logging.error("No volume selected. Terminating...")
+          return None
+
+    importer = DICOMScalarVolumePluginClass()
+    volNode = importer.load(importer.examine([volArray])[0])
+    volNode.SetName(str(sn))
+      
+    return volNode
+
+  def findDicoms(self, dcmpath):
+    dcmdict = {}
+    for root, dirs, files in os.walk(dcmpath):
+      files = [os.path.join(root, filename) for filename in files]
+      for file in files:
+        try:
+          ds = dicom.read_file(file)
+          sn = str(ds.SeriesNumber)
+          if sn not in dcmdict:
+            dcmdict[sn] = []
+          dcmdict[sn].append(file)
+        except Exception as e:
+          pass
+
+    if len(dcmdict) == 0:
+      logging.error("No DICOMs were recursively found in directory " + dcmpath)
+
+    return dcmdict
+
+  def seedSelectInfo(self, seed):
+    prompt = ctk.ctkMessageBox()
+    prompt.setIcon(qt.QMessageBox.Information)
+    prompt.setText("Click on a point in the %s to add the seed" % seed)
+    prompt.setStandardButtons(qt.QMessageBox.Ok | qt.QMessageBox.Cancel)
+    prompt.setDefaultButton(qt.QMessageBox.Ok)
+    answer = prompt.exec_()
+
     if answer == qt.QMessageBox.Cancel:
       logging.info("Terminating...")
       self.logic = None
       return
 
-    logging.info("Coords are: " + self.drawFiducial(seed))
+    self.drawFiducial(seed)
+
+  def promptSeedSelect(self, seed):
+    c = ctk.ctkMessageBox()
+    c.setIcon(qt.QMessageBox.Information)
+    c.setText("Add more seeds to %s?" % seed)
+    # c.setStandardButtons(qt.QMessageBox.Ok || qt.QMessageBox.Apply)
+    addMoreButton = c.addButton(qt.QMessageBox.Apply)
+    addMoreButton.setText("Add More")
+    saveButton = c.addButton(qt.QMessageBox.SaveAll)
+    c.setDefaultButton(addMoreButton)
+    answer = c.exec_()
+
+    if answer == qt.QMessageBox.Apply:
+    	self.drawFiducial(seed)
+    elif seed == "background":
+    	self.seedSelectInfo("phantom")
+    elif seed == "phantom":
+    	self.seedSelectInfo("feature")
+    elif seed == "feature":
+    	self.logic.run(self.masterVolumeNode, self.seedCoords)
+        
 
   def drawFiducial(self, seed):
-    ras = [0.0,0.0,0.0]
 
     fidNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode', seed)
     selectionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLSelectionNodeSingleton")
@@ -167,9 +259,48 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     interactionNode.SetPlaceModePersistence(placeModePersistence)
     interactionNode.SetCurrentInteractionMode(1)
 
-    fidNode.GetNthFiducialPosition(0, ras)
+    fidNode.AddObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent, self.addRas)
 
-    return ras
+
+  def addRas(self,caller,event):
+    ras = [0,0,0]
+    caller.GetNthFiducialPosition(0, ras)
+    seed = caller.GetName()
+
+    # Stop fiducial placement
+    interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
+    interactionNode.SwitchToViewTransformMode()
+    # also turn off place mode persistence if required
+    interactionNode.SetPlaceModePersistence(0)
+
+    caller.RemoveObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent)
+    slicer.mrmlScene.RemoveNode(caller)
+
+
+    if seed not in self.seedCoords:
+        self.seedCoords[seed] = []
+
+    self.seedCoords[seed].append(ras)
+
+    self.promptSeedSelect(seed)
+
+    fidNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode', seed)
+    selectionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLSelectionNodeSingleton")
+    selectionNode.SetReferenceActivePlaceNodeID(fidNode.GetID())
+    interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
+    # For multiple clicks, change this to 1
+    placeModePersistence = 0
+    interactionNode.SetPlaceModePersistence(placeModePersistence)
+    interactionNode.SetCurrentInteractionMode(1)
+
+    fidNode.AddObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent, self.addRas)
+
+    # if seed == "background":
+    # 	self.promptSeedSelect("phantom")
+    # elif seed == "phantom":
+    # 	self.promptSeedSelect("feature")
+    # elif seed == "feature":
+    # 	self.logic.run(self.masterVolumeNode, self.seedCoords)
 
 #
 # PhantomSegmenterLogic
@@ -178,7 +309,7 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
 
 class PhantomSegmenterLogic(ScriptedLoadableModuleLogic):
 
-  def run(self, masterVolumeNode):
+  def run(self, masterVolumeNode, seedCoords):
     # for each volume we will perform the segmentation
     # much of this code is based off of https://subversion.assembla.com/svn/slicerrt/trunk/SlicerRt/samples/PythonScripts/SegmentGrowCut/SegmentGrowCutSimple.py
 
@@ -189,7 +320,8 @@ class PhantomSegmenterLogic(ScriptedLoadableModuleLogic):
     segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(masterVolumeNode)
 
     # create segment seed(s) for phantom volume
-    volSeedPositions = ([50.5,24.9,32.4], [-50.5,24.9,32.4],[-50.5,24.9,-62.4]) # change these based on phantom location in image
+    # volSeedPositions = ([50.5,24.9,32.4], [-50.5,24.9,32.4],[-50.5,24.9,-62.4]) # change these based on phantom location in image
+    volSeedPositions = seedCoords['phantom'] # change these based on phantom location in image
     append = vtk.vtkAppendPolyData()
     for volSeedPosition in volSeedPositions:
       # create a seed as a sphere
@@ -205,7 +337,8 @@ class PhantomSegmenterLogic(ScriptedLoadableModuleLogic):
     volSegID = segmentationNode.AddSegmentFromClosedSurfaceRepresentation(append.GetOutput(), "PhantomVolume", [1.0,0.0,0.0])
 
     # create segment seed(s) for the background noise
-    bgSeedPositions = ([47,124,8],[-47,-80,8],[44,-90,32], [63,-83,6], [-68,106,-56]) # change these based on where the background/noise is in your image
+    # bgSeedPositions = ([47,124,8],[-47,-80,8],[44,-90,32], [63,-83,6], [-68,106,-56]) # change these based on where the background/noise is in your image
+    bgSeedPositions = seedCoords['background'] # change these based on where the background/noise is in your image
     appendBg = vtk.vtkAppendPolyData()
     for bgSeedPos in bgSeedPositions:
       bgSeed = vtk.vtkSphereSource()
@@ -220,7 +353,8 @@ class PhantomSegmenterLogic(ScriptedLoadableModuleLogic):
     segmentationNode.AddSegmentFromClosedSurfaceRepresentation(appendBg.GetOutput(), "Background", [0.0,1.0,0.0])
 
     # create segmentation seed(s) for any additional feature that you wish to segment out
-    featSeedPositions = ([32, -35, -11],[-28,-35,11],[-50,-35,11],[-15,42,18],[-15,30,18]) # change this based on the location of feature(s)
+    # featSeedPositions = ([32, -35, -11],[-28,-35,11],[-50,-35,11],[-15,42,18],[-15,30,18]) # change this based on the location of feature(s)
+    featSeedPositions = seedCoords['feature'] # change this based on the location of feature(s)
     appendFeat = vtk.vtkAppendPolyData()
     for featSeedPos in featSeedPositions:
       featSeed = vtk.vtkSphereSource()
@@ -262,72 +396,6 @@ class PhantomSegmenterLogic(ScriptedLoadableModuleLogic):
 
     # cleanup segment editor node
     slicer.mrmlScene.RemoveNode(segmentEditorNode)
-
-  def convertNrrd(self, dcmpath):
-    from PythonQt import BoolResult
-    volArray = []
-
-    files = os.listdir(dcmpath)
-    files = [os.path.join(dcmpath, file) for file in files]
-
-    for file in files:
-      if os.path.isfile(file):
-        try:
-          ds = dicom.read_file(file)
-          sn = ds.SeriesNumber
-          volArray.append(file)
-        except InvalidDicomError as ex:
-          pass
-
-    if len(volArray) == 0:
-      logging.info("No DICOMs were found in directory " + dcmpath)
-      logging.info("Doing recursive search...")
-
-      recdcms = self.findDicoms(dcmpath)
-
-      if len(recdcms) == 0:
-        return None
-
-      else:
-        keys = recdcms.keys()
-        diag = qt.QInputDialog()
-        scriptpath = os.path.dirname(__file__)
-        iconpath = os.path.join(scriptpath, 'Resources', 'Icons', 'PhantomSegmenter.png')
-        iconpath = iconpath.replace('\\', '/')
-        icon = qt.QIcon(iconpath)
-        diag.setWindowIcon(icon)
-        ok = BoolResult()
-        sn = qt.QInputDialog.getItem(diag, "Pick Volume", "Choose Series Number:", keys, 0, False, ok)
-        volArray = recdcms[str(sn)]
-
-        if not ok:
-          logging.error("No volume selected. Terminating...")
-          return None
-
-    importer = DICOMScalarVolumePluginClass()
-    volNode = importer.load(importer.examine([volArray])[0])
-    volNode.SetName(str(sn))
-      
-    return volNode
-
-  def findDicoms(self, dcmpath):
-    dcmdict = {}
-    for root, dirs, files in os.walk(dcmpath):
-      files = [os.path.join(root, filename) for filename in files]
-      for file in files:
-        try:
-          ds = dicom.read_file(file)
-          sn = str(ds.SeriesNumber)
-          if sn not in dcmdict:
-            dcmdict[sn] = []
-          dcmdict[sn].append(file)
-        except Exception as e:
-          pass
-
-    if len(dcmdict) == 0:
-      logging.error("No DICOMs were recursively found in directory " + dcmpath)
-
-    return dcmdict
 
 class PhantomSegmenterTest(ScriptedLoadableModuleTest):
   """
