@@ -137,9 +137,6 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     else:
       self.masterVolumeNode = self.inputSelector.currentNode()
 
-    interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
-    interactionNode.AddObserver(slicer.vtkMRMLInteractionNode.InteractionModeChangedEvent, self.dbg)
-
     self.seedSelectInfo("background")
 
   def loadDicoms(self, dcmpath):
