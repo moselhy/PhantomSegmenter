@@ -137,6 +137,8 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     else:
       self.masterVolumeNode = self.inputSelector.currentNode()
 
+    interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
+    interactionNode.AddObserver(slicer.vtkMRMLInteractionNode.InteractionModeChangedEvent, self.dbg)
 
     self.seedSelectInfo("background")
 
@@ -181,12 +183,13 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
         sn = qt.QInputDialog.getItem(diag, "Pick Volume", "Choose Series Number:", keys, 0, False, ok)
         volArray = recdcms[str(sn)]
         volDir = os.path.dirname(volArray[0])
-        self.inputDicomSelector.directory = volDir
 
         if not ok:
           logging.error("No volume selected. Terminating...")
           return None
 
+
+    self.inputDicomSelector.directory = volDir
     importer = DICOMScalarVolumePluginClass()
     volNode = importer.load(importer.examine([volArray])[0])
     volNode.SetName(str(sn))
@@ -231,7 +234,6 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     c = ctk.ctkMessageBox()
     c.setIcon(qt.QMessageBox.Information)
     c.setText("Add more seeds to %s?" % seed)
-    # c.setStandardButtons(qt.QMessageBox.Ok || qt.QMessageBox.Apply)
     addMoreButton = c.addButton(qt.QMessageBox.Apply)
     addMoreButton.setText("Add More")
     saveButton = c.addButton(qt.QMessageBox.SaveAll)
@@ -239,17 +241,18 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     answer = c.exec_()
 
     if answer == qt.QMessageBox.Apply:
-    	self.drawFiducial(seed)
+        self.drawFiducial(seed)
     elif seed == "background":
-    	self.seedSelectInfo("phantom")
+        self.seedSelectInfo("phantom")
     elif seed == "phantom":
-    	self.seedSelectInfo("feature")
+        self.seedSelectInfo("feature")
     elif seed == "feature":
-    	self.logic.run(self.masterVolumeNode, self.seedCoords)
+        qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
+        self.logic.run(self.masterVolumeNode, self.seedCoords)
+        qt.QApplication.restoreOverrideCursor()
         
 
   def drawFiducial(self, seed):
-
     fidNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode', seed)
     selectionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLSelectionNodeSingleton")
     selectionNode.SetReferenceActivePlaceNodeID(fidNode.GetID())
@@ -262,7 +265,7 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     fidNode.AddObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent, self.addRas)
 
 
-  def addRas(self,caller,event):
+  def addRas(self, caller, event):
     ras = [0,0,0]
     caller.GetNthFiducialPosition(0, ras)
     seed = caller.GetName()
@@ -276,31 +279,12 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     caller.RemoveObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent)
     slicer.mrmlScene.RemoveNode(caller)
 
-
     if seed not in self.seedCoords:
         self.seedCoords[seed] = []
 
     self.seedCoords[seed].append(ras)
 
     self.promptSeedSelect(seed)
-
-    fidNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode', seed)
-    selectionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLSelectionNodeSingleton")
-    selectionNode.SetReferenceActivePlaceNodeID(fidNode.GetID())
-    interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
-    # For multiple clicks, change this to 1
-    placeModePersistence = 0
-    interactionNode.SetPlaceModePersistence(placeModePersistence)
-    interactionNode.SetCurrentInteractionMode(1)
-
-    fidNode.AddObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent, self.addRas)
-
-    # if seed == "background":
-    # 	self.promptSeedSelect("phantom")
-    # elif seed == "phantom":
-    # 	self.promptSeedSelect("feature")
-    # elif seed == "feature":
-    # 	self.logic.run(self.masterVolumeNode, self.seedCoords)
 
 #
 # PhantomSegmenterLogic
