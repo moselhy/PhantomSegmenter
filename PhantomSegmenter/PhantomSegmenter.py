@@ -6,6 +6,7 @@ import logging
 import dicom
 from dicom.filereader import InvalidDicomError
 from DICOMScalarVolumePlugin import DICOMScalarVolumePluginClass
+import PythonQt
 
 #
 # PhantomSegmenter
@@ -44,74 +45,89 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
 
     # Instantiate and connect widgets ...
 
-    #
-    # Import from Volume Node Area
-    #
     self.parametersCollapsibleButton = ctk.ctkCollapsibleButton()
     self.parametersCollapsibleButton.text = "Parameters"
     self.layout.addWidget(self.parametersCollapsibleButton)
 
-    # Layout within the dummy collapsible button
     self.parametersFormLayout = qt.QFormLayout(self.parametersCollapsibleButton)
 
     #
     # input volume selector
     #
-    self.inputSelector = slicer.qMRMLNodeComboBox()
-    self.inputSelector.nodeTypes = ["vtkMRMLScalarVolumeNode"]
-    self.inputSelector.selectNodeUponCreation = True
-    self.inputSelector.addEnabled = True
-    self.inputSelector.removeEnabled = True
-    self.inputSelector.renameEnabled = True
-    self.inputSelector.noneEnabled = False
-    self.inputSelector.showHidden = False
-    self.inputSelector.showChildNodeTypes = False
-    self.inputSelector.setMRMLScene( slicer.mrmlScene )
-    self.inputSelector.setToolTip( "Pick the input to the algorithm." )
+    self.inputVolumeSelector = slicer.qMRMLNodeComboBox()
+    self.inputVolumeSelector.nodeTypes = ["vtkMRMLScalarVolumeNode"]
+    self.inputVolumeSelector.selectNodeUponCreation = True
+    self.inputVolumeSelector.addEnabled = True
+    self.inputVolumeSelector.removeEnabled = True
+    self.inputVolumeSelector.renameEnabled = True
+    self.inputVolumeSelector.noneEnabled = False
+    self.inputVolumeSelector.showHidden = False
+    self.inputVolumeSelector.showChildNodeTypes = False
+    self.inputVolumeSelector.setMRMLScene(slicer.mrmlScene)
+    self.inputVolumeSelector.setToolTip("Pick the input to the algorithm.")
 
     self.inputModeLabel = qt.QLabel("Pick input mode:")
     self.loadFromVolume = qt.QRadioButton("Load from Volume")
     self.loadFromVolume.checked = True
     self.loadFromDicom = qt.QRadioButton("Load from DICOM")
 
-    self.loadFromVolume.connect("clicked(bool)", self.onSelect)
-    self.loadFromDicom.connect("clicked(bool)", self.onSelect)
 
     self.inputDicomSelector = ctk.ctkDirectoryButton()
     self.inputDicomSelector.caption = 'Input DICOMs'
-    self.inputDicomSelector.connect("directoryChanged(QString)", self.onSelect)
+    self.loadDicomsButton = qt.QPushButton("Import and Load")
+    self.dicomVolumeNode = None
+
+    self.importDicomLayout = qt.QHBoxLayout()
+    self.importDicomLayout.addWidget(self.inputDicomSelector, 9)
+    self.importDicomLayout.addWidget(self.loadDicomsButton, 1)
 
     self.parametersFormLayout.addRow(self.inputModeLabel)
-    self.parametersFormLayout.addRow(self.loadFromVolume, self.inputSelector)
-    self.parametersFormLayout.addRow(self.loadFromDicom, self.inputDicomSelector)
+    self.parametersFormLayout.addRow(self.loadFromVolume, self.inputVolumeSelector)
+    self.parametersFormLayout.addRow(self.loadFromDicom, self.importDicomLayout)
 
     self.seedCoords = {}
 
-    # # Seed selector - not needed
-    # self.seedFiducialsNodeSelector = slicer.qSlicerSimpleMarkupsWidget()
-    # self.seedFiducialsNodeSelector.objectName = 'seedFiducialsNodeSelector'
-    # self.seedFiducialsNodeSelector.toolTip = "Select a fiducial to use as the origin of the background segment."
-    # self.seedFiducialsNodeSelector.setNodeBaseName("OriginSeed")
-    # self.seedFiducialsNodeSelector.defaultNodeColor = qt.QColor(0,255,0)
-    # self.seedFiducialsNodeSelector.tableWidget().hide()
-    # self.seedFiducialsNodeSelector.markupsSelectorComboBox().noneEnabled = False
-    # self.seedFiducialsNodeSelector.markupsPlaceWidget().placeMultipleMarkups = slicer.qSlicerMarkupsPlaceWidget.ForcePlaceSingleMarkup
-    # self.parametersFormLayout.addRow("Seeds:", self.seedFiducialsNodeSelector)
-    # self.parent.connect('mrmlSceneChanged(vtkMRMLScene*)',
-    #                     self.seedFiducialsNodeSelector, 'setMRMLScene(vtkMRMLScene*)')
-    # self.seedFiducialsNodeSelector.setMRMLScene(slicer.mrmlScene)
+    # Seed selector
+    self.seedFiducialsNodeSelector = slicer.qSlicerSimpleMarkupsWidget()
+    self.seedFiducialsNodeSelector.objectName = 'seedFiducialsNodeSelector'
+    self.seedFiducialsNodeSelector.toolTip = "Select a fiducial to use as the origin of the segments."
+    self.seedFiducialsNodeSelector.setNodeBaseName("Seed")
+    self.seedFiducialsNodeSelector.defaultNodeColor = qt.QColor(0,255,0)
+    self.seedFiducialsNodeSelector.tableWidget().hide()
+    self.seedFiducialsNodeSelector.markupsSelectorComboBox().noneEnabled = False
+    self.seedFiducialsNodeSelector.markupsPlaceWidget().placeMultipleMarkups = slicer.qSlicerMarkupsPlaceWidget.ForcePlaceSingleMarkup    
+    self.seedFiducialsNodeSelector.markupsPlaceWidget().buttonsVisible = False
+    self.seedFiducialsNodeSelector.markupsPlaceWidget().placeButton().show()
+    self.seedFiducialsNodeSelector.setMRMLScene(slicer.mrmlScene)
+
+    self.parametersFormLayout.addRow("Choose seed node:", self.seedFiducialsNodeSelector)
+
+    #
+    # Setup Button
+    #
+    self.setupButton = qt.QPushButton("Setup")
+    self.setupButton.toolTip = "Setup the algorithm."
+    self.setupButton.enabled = False
+    self.layout.addWidget(self.setupButton)
 
     #
     # Apply Button
     #
-    self.applyButton = qt.QPushButton("Apply")
-    self.applyButton.toolTip = "Run the algorithm."
+    self.applyButton = qt.QPushButton("Autosegment")
+    self.applyButton.toolTip = "Autosegment the phantom."
     self.applyButton.enabled = False
     self.layout.addWidget(self.applyButton)
 
     # connections
+    self.setupButton.connect('clicked(bool)', self.onSetupButton)
     self.applyButton.connect('clicked(bool)', self.onApplyButton)
-    self.inputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.onSelect)
+    self.inputVolumeSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.onSelect)
+    self.loadFromVolume.connect("clicked(bool)", self.onSelect)
+    self.loadFromDicom.connect("clicked(bool)", self.onSelect)
+    self.loadDicomsButton.connect("clicked(bool)", self.onDicomImportClicked)
+    self.loadDicomsButton.connect("clicked(bool)", self.onSelect)
+    self.parent.connect('mrmlSceneChanged(vtkMRMLScene*)',
+                        self.seedFiducialsNodeSelector, 'setMRMLScene(vtkMRMLScene*)')
 
     # Add vertical spacer
     self.layout.addStretch(1)
@@ -119,32 +135,82 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     # Refresh Apply button state
     self.onSelect()
 
+  def onDicomImportClicked(self):
+    self.dicomVolumeNode = self.loadDicoms(self.inputDicomSelector.directory)
 
   def cleanup(self):
     pass
 
   def onSelect(self):
-    self.applyButton.enabled = self.loadFromDicom.checked or self.loadFromVolume.checked and self.inputSelector.currentNode()
+    if self.loadFromVolume.checked:
+      self.masterVolumeNode = self.inputVolumeSelector.currentNode()
+
+    else:
+      self.masterVolumeNode = self.dicomVolumeNode
+
+    self.setupButton.enabled = self.masterVolumeNode and slicer.mrmlScene.GetNodeByID(self.masterVolumeNode.GetID())
+
+  def onSetupButton(self):
+    prompt = ctk.ctkMessageBox()
+    scriptpath = os.path.dirname(__file__)
+    iconpath = os.path.join(scriptpath, 'Resources', 'Icons', 'PhantomSegmenter.png')
+    iconpath = iconpath.replace('\\', '/')
+    icon = qt.QIcon(iconpath)
+    prompt.setWindowIcon(icon)
+    prompt.setWindowTitle("Add seeds")
+    prompt.setIcon(qt.QMessageBox.Information)
+    prompt.setText("Add at least one seed to the background, phantom, and feature using the seed node selector on the left, then click \"Autosegment\"")
+    prompt.setStandardButtons(qt.QMessageBox.Ok | qt.QMessageBox.Cancel)
+    prompt.setDefaultButton(qt.QMessageBox.Ok)
+    answer = prompt.exec_()
+
+    if answer == qt.QMessageBox.Cancel:
+        logging.info("Operation cancelled by user, terminating...")
+        return
+
+    self.bgNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode", "Background")
+    self.phantomNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode", "Phantom")
+    self.featureNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode", "Feature")
+
+    self.bgNode.AddObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent, self.onSeedSelect)
+    self.phantomNode.AddObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent, self.onSeedSelect)
+    self.featureNode.AddObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent, self.onSeedSelect)
+
+    self.bgNode.GetDisplayNode().SetSelectedColor(0,1,0)
+    self.phantomNode.GetDisplayNode().SetSelectedColor(1,0,0)
+    self.featureNode.GetDisplayNode().SetSelectedColor(0,0,1)
+
+    self.seedFiducialsNodeSelector.setCurrentNode(self.bgNode)
+
+  def onSeedSelect(self, caller, event):
+    self.applyButton.enabled = self.bgNode.GetNumberOfMarkups() and self.phantomNode.GetNumberOfMarkups() and self.featureNode.GetNumberOfMarkups()
 
   def onApplyButton(self):
+    self.addSeedCoords(self.bgNode)
+    self.addSeedCoords(self.phantomNode)
+    self.addSeedCoords(self.featureNode)
+
     self.logic = PhantomSegmenterLogic()
+    self.logic.run(self.masterVolumeNode, self.seedCoords)
 
-    if self.loadFromDicom.checked:
-      dcmpath = self.inputDicomSelector.directory
-      self.masterVolumeNode = self.loadDicoms(dcmpath)
-      if not self.masterVolumeNode:
-        return
-    else:
-      self.masterVolumeNode = self.inputSelector.currentNode()
+  def addSeedCoords(self, fidNode):
+    seed = fidNode.GetName()
+    if seed not in self.seedCoords:
+        self.seedCoords[seed] = []
+    
+    for n in range(fidNode.GetNumberOfMarkups()):
+        ras = [0,0,0]
+        fidNode.GetNthFiducialPosition(n, ras)
+        self.seedCoords[seed].append(ras)
 
-    self.seedSelectInfo("background")
+    slicer.mrmlScene.RemoveNode(fidNode)
 
   def loadDicoms(self, dcmpath):
-    from PythonQt import BoolResult
     volArray = []
 
     files = os.listdir(dcmpath)
     files = [os.path.join(dcmpath, file) for file in files]
+    volDir = self.inputDicomSelector.directory
 
     for file in files:
       if os.path.isfile(file):
@@ -160,9 +226,7 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
       logging.info("Doing recursive search...")
 
       qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
-
       recdcms = self.findDicoms(dcmpath)
-
       qt.QApplication.restoreOverrideCursor()
 
       if len(recdcms) == 0:
@@ -176,7 +240,7 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
         iconpath = iconpath.replace('\\', '/')
         icon = qt.QIcon(iconpath)
         diag.setWindowIcon(icon)
-        ok = BoolResult()
+        ok = PythonQt.BoolResult()
         sn = qt.QInputDialog.getItem(diag, "Pick Volume", "Choose Series Number:", keys, 0, False, ok)
         volArray = recdcms[str(sn)]
         volDir = os.path.dirname(volArray[0])
@@ -212,76 +276,6 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
 
     return dcmdict
 
-  def seedSelectInfo(self, seed):
-    prompt = ctk.ctkMessageBox()
-    prompt.setIcon(qt.QMessageBox.Information)
-    prompt.setText("Click on a point in the %s to add the seed" % seed)
-    prompt.setStandardButtons(qt.QMessageBox.Ok | qt.QMessageBox.Cancel)
-    prompt.setDefaultButton(qt.QMessageBox.Ok)
-    answer = prompt.exec_()
-
-    if answer == qt.QMessageBox.Cancel:
-      logging.info("Terminating...")
-      self.logic = None
-      return
-
-    self.drawFiducial(seed)
-
-  def promptSeedSelect(self, seed):
-    c = ctk.ctkMessageBox()
-    c.setIcon(qt.QMessageBox.Information)
-    c.setText("Add more seeds to %s?" % seed)
-    addMoreButton = c.addButton(qt.QMessageBox.Apply)
-    addMoreButton.setText("Add More")
-    saveButton = c.addButton(qt.QMessageBox.SaveAll)
-    c.setDefaultButton(addMoreButton)
-    answer = c.exec_()
-
-    if answer == qt.QMessageBox.Apply:
-        self.drawFiducial(seed)
-    elif seed == "background":
-        self.seedSelectInfo("phantom")
-    elif seed == "phantom":
-        self.seedSelectInfo("feature")
-    elif seed == "feature":
-        qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
-        self.logic.run(self.masterVolumeNode, self.seedCoords)
-        qt.QApplication.restoreOverrideCursor()
-        
-
-  def drawFiducial(self, seed):
-    fidNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode', seed)
-    selectionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLSelectionNodeSingleton")
-    selectionNode.SetReferenceActivePlaceNodeID(fidNode.GetID())
-    interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
-    # For multiple clicks, change this to 1
-    placeModePersistence = 0
-    interactionNode.SetPlaceModePersistence(placeModePersistence)
-    interactionNode.SetCurrentInteractionMode(1)
-
-    fidNode.AddObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent, self.addRas)
-
-
-  def addRas(self, caller, event):
-    ras = [0,0,0]
-    caller.GetNthFiducialPosition(0, ras)
-    seed = caller.GetName()
-
-    # Stop fiducial placement
-    interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
-    interactionNode.SwitchToViewTransformMode()
-    # also turn off place mode persistence if required
-    interactionNode.SetPlaceModePersistence(0)
-
-    caller.RemoveObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent)
-    slicer.mrmlScene.RemoveNode(caller)
-
-    if seed not in self.seedCoords:
-        self.seedCoords[seed] = []
-
-    self.seedCoords[seed].append(ras)
-
-    self.promptSeedSelect(seed)
 
 #
 # PhantomSegmenterLogic
@@ -302,7 +296,7 @@ class PhantomSegmenterLogic(ScriptedLoadableModuleLogic):
 
     # create segment seed(s) for phantom volume
     # volSeedPositions = ([50.5,24.9,32.4], [-50.5,24.9,32.4],[-50.5,24.9,-62.4]) # change these based on phantom location in image
-    volSeedPositions = seedCoords['phantom'] # change these based on phantom location in image
+    volSeedPositions = seedCoords['Phantom'] # change these based on phantom location in image
     append = vtk.vtkAppendPolyData()
     for volSeedPosition in volSeedPositions:
       # create a seed as a sphere
@@ -314,12 +308,12 @@ class PhantomSegmenterLogic(ScriptedLoadableModuleLogic):
 
     append.Update()
     
-    # add segmentation to the segmentationNode. "PhantomVolume" can be any string, and the following double array is colour.
-    volSegID = segmentationNode.AddSegmentFromClosedSurfaceRepresentation(append.GetOutput(), "PhantomVolume", [1.0,0.0,0.0])
+    # add segmentation to the segmentationNode. "Phantom" can be any string, and the following double array is colour.
+    volSegID = segmentationNode.AddSegmentFromClosedSurfaceRepresentation(append.GetOutput(), "Phantom", [1.0,0.0,0.0])
 
     # create segment seed(s) for the background noise
     # bgSeedPositions = ([47,124,8],[-47,-80,8],[44,-90,32], [63,-83,6], [-68,106,-56]) # change these based on where the background/noise is in your image
-    bgSeedPositions = seedCoords['background'] # change these based on where the background/noise is in your image
+    bgSeedPositions = seedCoords['Background'] # change these based on where the background/noise is in your image
     appendBg = vtk.vtkAppendPolyData()
     for bgSeedPos in bgSeedPositions:
       bgSeed = vtk.vtkSphereSource()
@@ -335,7 +329,7 @@ class PhantomSegmenterLogic(ScriptedLoadableModuleLogic):
 
     # create segmentation seed(s) for any additional feature that you wish to segment out
     # featSeedPositions = ([32, -35, -11],[-28,-35,11],[-50,-35,11],[-15,42,18],[-15,30,18]) # change this based on the location of feature(s)
-    featSeedPositions = seedCoords['feature'] # change this based on the location of feature(s)
+    featSeedPositions = seedCoords['Feature'] # change this based on the location of feature(s)
     appendFeat = vtk.vtkAppendPolyData()
     for featSeedPos in featSeedPositions:
       featSeed = vtk.vtkSphereSource()

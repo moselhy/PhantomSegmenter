@@ -4,7 +4,7 @@ project(PhantomSegmenter)
 
 #-----------------------------------------------------------------------------
 # Extension meta-information
-set(EXTENSION_HOMEPAGE "http://slicer.org/slicerWiki/index.php/Documentation/Nightly/Extensions/PhantomSegmenter")
+set(EXTENSION_HOMEPAGE "https://github.com/moselhy/PhantomSegmenter")
 set(EXTENSION_CATEGORY "Segmentation")
 set(EXTENSION_CONTRIBUTORS "Colin McCurdy (Western University), Mohamed Moselhy (Western University)")
 set(EXTENSION_DESCRIPTION "Automatically segment a Phantom using Grow from Seeds")
