@@ -100,7 +100,10 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     self.seedFiducialsNodeSelector.markupsPlaceWidget().placeButton().show()
     self.seedFiducialsNodeSelector.setMRMLScene(slicer.mrmlScene)
 
-    self.parametersFormLayout.addRow("Choose seed node:", self.seedFiducialsNodeSelector)
+    self.seedFiducialsBox = qt.QHBoxLayout()
+    self.seedLabelWidget = qt.QLabel("Choose seed node:")
+    self.seedFiducialsBox.addWidget(self.seedLabelWidget)
+    self.seedFiducialsBox.addWidget(self.seedFiducialsNodeSelector)
 
     #
     # Setup Button
@@ -129,6 +132,8 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     self.parent.connect('mrmlSceneChanged(vtkMRMLScene*)',
                         self.seedFiducialsNodeSelector, 'setMRMLScene(vtkMRMLScene*)')
 
+    self.tmpNodes = []
+
     # Add vertical spacer
     self.layout.addStretch(1)
 
@@ -139,7 +144,9 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     self.dicomVolumeNode = self.loadDicoms(self.inputDicomSelector.directory)
 
   def cleanup(self):
-    pass
+  	for tmpNode in self.tmpNodes:
+		slicer.mrmlScene.RemoveNode(tmpNode)
+	self.parametersFormLayout.removeItem(self.seedFiducialsBox)
 
   def onSelect(self):
     if self.loadFromVolume.checked:
@@ -163,6 +170,8 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     prompt.setStandardButtons(qt.QMessageBox.Ok | qt.QMessageBox.Cancel)
     prompt.setDefaultButton(qt.QMessageBox.Ok)
     answer = prompt.exec_()
+    self.parametersFormLayout.addRow(self.seedFiducialsBox)
+
 
     if answer == qt.QMessageBox.Cancel:
         logging.info("Operation cancelled by user, terminating...")
@@ -171,6 +180,8 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     self.bgNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode", "Background")
     self.phantomNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode", "Phantom")
     self.featureNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode", "Feature")
+
+    self.tmpNodes = [self.bgNode, self.phantomNode, self.featureNode]
 
     self.bgNode.AddObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent, self.onSeedSelect)
     self.phantomNode.AddObserver(slicer.vtkMRMLMarkupsNode.MarkupAddedEvent, self.onSeedSelect)
@@ -193,6 +204,8 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     self.logic = PhantomSegmenterLogic()
     self.logic.run(self.masterVolumeNode, self.seedCoords)
 
+    self.cleanup()
+
   def addSeedCoords(self, fidNode):
     seed = fidNode.GetName()
     if seed not in self.seedCoords:
@@ -202,8 +215,6 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
         ras = [0,0,0]
         fidNode.GetNthFiducialPosition(n, ras)
         self.seedCoords[seed].append(ras)
-
-    slicer.mrmlScene.RemoveNode(fidNode)
 
   def loadDicoms(self, dcmpath):
     volArray = []
