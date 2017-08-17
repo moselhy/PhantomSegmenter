@@ -74,6 +74,7 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
 
     self.inputDicomSelector = ctk.ctkDirectoryButton()
     self.inputDicomSelector.caption = 'Input DICOMs'
+    self.inputDicomSelector.directory = os.path.join(os.path.expanduser("~"), "Documents")
     self.loadDicomsButton = qt.QPushButton("Import and Load")
     self.dicomVolumeNode = None
 
@@ -307,7 +308,7 @@ class PhantomSegmenterLogic(ScriptedLoadableModuleLogic):
 
     # setup the segmentation node for our DICOM volume - "masterVolumeNode"
     segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
-    segmentationNode.SetName(masterVolumeNode.GetName())
+    segmentationNode.SetName("%s_segmentation" % masterVolumeNode.GetName())
     segmentationNode.CreateDefaultDisplayNodes()
     segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(masterVolumeNode)
 
