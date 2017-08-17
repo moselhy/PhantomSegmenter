@@ -142,11 +142,14 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
 
   def onDicomImportClicked(self):
     self.dicomVolumeNode = self.loadDicoms(self.inputDicomSelector.directory)
+    self.inputVolumeSelector.setCurrentNode(self.dicomVolumeNode)
 
   def cleanup(self):
-  	for tmpNode in self.tmpNodes:
-		slicer.mrmlScene.RemoveNode(tmpNode)
-	self.parametersFormLayout.removeItem(self.seedFiducialsBox)
+    for tmpNode in self.tmpNodes:
+      slicer.mrmlScene.RemoveNode(tmpNode)
+    self.parametersFormLayout.removeItem(self.seedFiducialsBox)
+    self.applyButton.enabled = False
+    self.setupButton.enabled = False
 
   def onSelect(self):
     if self.loadFromVolume.checked:
@@ -166,7 +169,7 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     prompt.setWindowIcon(icon)
     prompt.setWindowTitle("Add seeds")
     prompt.setIcon(qt.QMessageBox.Information)
-    prompt.setText("Add at least one seed to the background, phantom, and feature using the seed node selector on the left, then click \"Autosegment\"")
+    prompt.setText("Add at least one seed to the background, phantom, and feature using the seed node selector on the left, then click \"%s\"" % self.applyButton.text)
     prompt.setStandardButtons(qt.QMessageBox.Ok | qt.QMessageBox.Cancel)
     prompt.setDefaultButton(qt.QMessageBox.Ok)
     answer = prompt.exec_()
@@ -194,7 +197,10 @@ class PhantomSegmenterWidget(ScriptedLoadableModuleWidget):
     self.seedFiducialsNodeSelector.setCurrentNode(self.bgNode)
 
   def onSeedSelect(self, caller, event):
-    self.applyButton.enabled = self.bgNode.GetNumberOfMarkups() and self.phantomNode.GetNumberOfMarkups() and self.featureNode.GetNumberOfMarkups()
+    if self.bgNode and self.phantomNode and self.featureNode:
+      self.applyButton.enabled = self.bgNode.GetNumberOfMarkups() and self.phantomNode.GetNumberOfMarkups() and self.featureNode.GetNumberOfMarkups()
+    else:
+      self.applyButton.enabled = False
 
   def onApplyButton(self):
     self.addSeedCoords(self.bgNode)
